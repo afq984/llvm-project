@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+old_pwd="${PWD}"
+cd "$(dirname "${BASH_SOURCE[0]}")/../utils/bazel"
+bazel run --run_under="cd '${old_pwd}' && " @llvm-project//clang-tools-extra/clang-tidy -- "$@"

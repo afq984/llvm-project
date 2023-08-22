@@ -3,3 +3,8 @@
 
 # Per-user bazelrc files
 user.bazelrc
+
+/external
+/bazel-*
+/compile_commands.json
+/.cache/

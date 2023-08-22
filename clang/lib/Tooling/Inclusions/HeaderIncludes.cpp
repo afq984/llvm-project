@@ -96,7 +96,7 @@ unsigned getOffsetAfterHeaderGuardsAndComments(StringRef FileName,
               return std::max(InitialOffset, Consume(SM, Lex, Tok));
             });
       };
-  return std::max(
+  std::vector<unsigned> begins{
       // #ifndef/#define
       ConsumeHeaderGuardAndComment(
           [](const SourceManager &SM, Lexer &Lex, Token Tok) -> unsigned {
@@ -115,7 +115,37 @@ unsigned getOffsetAfterHeaderGuardsAndComments(StringRef FileName,
                                                  StringRef("once")))
               return SM.getFileOffset(Tok.getLocation());
             return 0;
-          }));
+          }),
+      // #define _GNU_SOURCE
+      ConsumeHeaderGuardAndComment(
+          [](const SourceManager &SM, Lexer &Lex, Token Tok) -> unsigned {
+            if (checkAndConsumeDirectiveWithName(Lex, "define", Tok,
+                                                 StringRef("_GNU_SOURCE")))
+              return SM.getFileOffset(Tok.getLocation());
+            return 0;
+          }),
+      // #ifndef _GNU_SOURCE #define GNU_SOURCE_ #endif
+      ConsumeHeaderGuardAndComment(
+          [](const SourceManager &SM, Lexer &Lex, Token Tok) -> unsigned {
+            if (checkAndConsumeDirectiveWithName(Lex, "ifndef", Tok,
+                                                 StringRef("_GNU_SOURCE"))) {
+              skipComments(Lex, Tok);
+              if (checkAndConsumeDirectiveWithName(Lex, "define", Tok,
+                                                   "_GNU_SOURCE") &&
+                  Tok.isAtStartOfLine()) {
+                skipComments(Lex, Tok);
+                if (Tok.is(tok::hash) && !Lex.LexFromRawLexer(Tok) &&
+                    Tok.is(tok::raw_identifier) &&
+                    Tok.getRawIdentifier() == "endif") {
+                  Lex.LexFromRawLexer(Tok);
+                  return SM.getFileOffset(Tok.getLocation());
+                }
+              }
+            }
+            return 0;
+          }),
+  };
+  return *std::max_element(begins.begin(), begins.end());
 }
 
 // Check if a sequence of tokens is like
@@ -276,8 +306,7 @@ HeaderIncludes::HeaderIncludes(StringRef FileName, StringRef Code,
       MaxInsertOffset(MinInsertOffset +
                       getMaxHeaderInsertionOffset(
                           FileName, Code.drop_front(MinInsertOffset), Style)),
-      MainIncludeFound(false),
-      Categories(Style, FileName) {
+      MainIncludeFound(false), Categories(Style, FileName) {
   // Add 0 for main header and INT_MAX for headers that are not in any
   // category.
   Priorities = {0, INT_MAX};
@@ -377,6 +406,9 @@ HeaderIncludes::insert(llvm::StringRef IncludeName, bool IsAngled,
         break;
       }
     }
+  }
+  for (auto [pri, off] : CategoryEndOffsets) {
+    InsertOffset = std::max<int>(InsertOffset, off);
   }
   assert(InsertOffset <= Code.size());
   llvm::StringRef DirectiveSpelling =

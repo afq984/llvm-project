@@ -38,6 +38,7 @@
 #include "llvm/Support/Regex.h"
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 using namespace clang::ast_matchers;
@@ -151,8 +152,9 @@ void IncludeCleanerCheck::check(const MatchFinder::MatchResult &Result) {
              }
              if (!Satisfied && !Providers.empty() &&
                  Ref.RT == include_cleaner::RefType::Explicit &&
-                 !shouldIgnore(Providers.front()))
+                 !shouldIgnore(Providers.front())) {
                Missing.push_back({Ref, Providers.front()});
+             }
            });
 
   std::vector<const include_cleaner::Include *> Unused;
@@ -188,7 +190,12 @@ void IncludeCleanerCheck::check(const MatchFinder::MatchResult &Result) {
   if (!FileStyle)
     FileStyle = format::getLLVMStyle();
 
+  std::unordered_set<std::string> Removed;
   for (const auto *Inc : Unused) {
+    [[maybe_unused]] auto [unused, inserted] = Removed.insert(Inc->quote());
+    if (!inserted) {
+      continue;
+    }
     diag(Inc->HashLocation, "included header %0 is not used directly")
         << llvm::sys::path::filename(Inc->Spelled,
                                      llvm::sys::path::Style::posix)
@@ -199,6 +206,7 @@ void IncludeCleanerCheck::check(const MatchFinder::MatchResult &Result) {
 
   tooling::HeaderIncludes HeaderIncludes(getCurrentMainFile(), Code,
                                          FileStyle->IncludeStyle);
+  std::unordered_set<std::string> Inserted;
   for (const auto &Inc : Missing) {
     std::string Spelling =
         include_cleaner::spellHeader({Inc.Missing, *HS, MainFile});
@@ -207,6 +215,17 @@ void IncludeCleanerCheck::check(const MatchFinder::MatchResult &Result) {
     // include is present in a PP-disabled region, or spelling of the header
     // turns out to be the same as one of the unresolved includes in the
     // main file.
+    auto Name = llvm::StringRef{Spelling}.trim("\"<>");
+    if (Name.starts_with("cras_") || Name == "packet_status_logger.h") {
+      Angled = false;
+    }
+    if (Name.starts_with("std")) {
+      Angled = true;
+    }
+    [[maybe_unused]] auto [unused, inserted] = Inserted.insert(Name.str());
+    if (!inserted) {
+      continue;
+    }
     if (auto Replacement =
             HeaderIncludes.insert(llvm::StringRef{Spelling}.trim("\"<>"),
                                   Angled, tooling::IncludeDirective::Include))
